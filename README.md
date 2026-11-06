@@ -26,6 +26,7 @@ start dictation. If setup is interrupted and reports a stale lock, remove
 - **Ctrl+Shift+M** starts and stops recording.
 - **Ctrl+Shift+N** cancels and discards the current recording.
 - In fullscreen mode, click **[ Stop ]** beside the listening meter to stop.
+- Use `/dictate-optimize off|clean` to control cleanup of future dictations.
 
 Focus a text field before recording. Pi Dictate appends text to editor fields.
 In other dialogs, it types into the focused field, so press Tab to reach it
@@ -33,7 +34,9 @@ first. If no text field has focus when recording stops, Pi Dictate tries to
 copy the transcript. If Pi's clipboard helper reports failure, Pi Dictate adds
 the transcript to the main editor and shows a warning. Pi may use the terminal's
 OSC 52 clipboard support, which cannot confirm that your terminal accepted the
-copy.
+copy. In `clean` mode, multiline or recognizable code-like transcripts bypass
+filler cleanup. If the focused component cannot accept multiline text, Pi
+Dictate copies it to the clipboard rather than sending control keys.
 
 Pi Dictate shows an audio-level meter while you speak. It inserts text after
 Nemotron returns the final transcript. If the runtime fails, Pi Dictate may
@@ -64,15 +67,21 @@ letter or digit.
 | `DICTATE_RUNTIME_PATH` | `native/install/pi-dictate-runtime` (`.exe` on Windows) | Runtime executable |
 | `DICTATE_MODEL_PATH` | `~/.local/share/pi-dictate/nemotron-3.5-asr-streaming-0.6b-q8_0.gguf` | Model file |
 | `DICTATE_LANGUAGE` | `auto` | Automatic detection, or choose `pt-BR` or `en-US` |
-| `DICTATE_CLEANUP` | off | Set to `1` to clean selected fillers and repeated subject pronouns |
+| `DICTATE_OPTIMIZE` | `off` | Choose `off` or conservative `clean` |
+| `DICTATE_CLEANUP` | off | Legacy alias: set to `1` for `clean` only when `DICTATE_OPTIMIZE` is unset |
 | `DICTATE_DEBUG` | off | Set to `1` to write extension events to your system's temporary directory |
 
-Cleanup runs on final transcripts. It removes common filler sounds and immediate
-repetitions of selected subject pronouns. It preserves repeated negations,
-other repeated words, and live hypotheses. In automatic language mode, it keeps
-ambiguous words such as `um` and `hum`. The filter does not repair syllable
-stutters or repeated phrases, and it can remove intentional filler or pronoun
-repetitions.
+`clean` applies to finalized dictation. It removes a small set of recognized
+fillers and immediate repetitions of subject pronouns, such as “Hmm, eu, eu
+quero revisar” becoming “Eu quero revisar.” It does not correct recognition
+errors, remove every hesitation, shorten sentences, or translate. In automatic
+language mode, ambiguous words such as `um` and `hum` stay in the transcript.
+Multiline and recognizable code-like text bypass cleanup. The rules can still
+remove an intentional filler or repeated pronoun. `off` keeps the existing
+whitespace normalization. Dictated text stays in the language you spoke; there
+is no translation or semantic rewriting mode. See
+[docs/PROMPT_OPTIMIZATION.md](docs/PROMPT_OPTIMIZATION.md) for the cleanup rules
+and benchmark.
 
 ## Terminal keys
 
@@ -93,14 +102,16 @@ npm ci
 npm run native:build
 npm run check
 npm test
+npm run benchmark
 npm run native:test
 ```
 
-The automated tests cover TypeScript behavior, setup planning, protocol
-handling, native JSONL parsing, and audio-level calculations. They do not test
-microphone recognition. Check your operating system's microphone permissions if
-recording cannot start. An illegal-instruction error means your x86-64 CPU may
-lack one of the required features above.
+The automated tests cover optimization rules and fallbacks, TypeScript behavior,
+setup planning, protocol handling, native JSONL parsing, and audio-level
+calculations. `npm run benchmark` measures the deterministic text pass; it does
+not benchmark microphone recognition. Check your operating system's microphone
+permissions if recording cannot start. An illegal-instruction error means your
+x86-64 CPU may lack one of the required features above.
 
 ## Attribution
 

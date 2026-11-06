@@ -15,7 +15,8 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --test index.test.ts scripts/setup.test.mjs",
+    "test": "node --test index.test.ts optimization.test.ts scripts/setup.test.mjs",
+    "benchmark": "node scripts/benchmark-optimizer.mjs",
     "native:build": "node scripts/build-native.mjs",
     "native:test": "ctest --test-dir native/build -C Release --output-on-failure",
     "model:download": "node scripts/download-model.mjs"

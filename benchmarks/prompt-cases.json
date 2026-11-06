@@ -1,0 +1,42 @@
+[
+  {
+    "id": "verbose-request-example",
+    "language": "pt-BR",
+    "input": "Então, eu queria que você desse uma olhada naquele arquivo que a gente estava trabalhando antes, porque eu acho que talvez tenha algum problema na função de inicialização, mas por enquanto não precisa modificar nada."
+  },
+  {
+    "id": "technical-with-filler",
+    "language": "pt-BR",
+    "input": "Hmm, eu, eu preciso revisar a função de inicialização e identificar possíveis erros sem modificar arquivos."
+  },
+  {
+    "id": "protected-path-and-code",
+    "language": "pt-BR",
+    "input": "Hum, eu, eu abra `src/index.ts`, confira /home/guest/dictate e rode `npm test`."
+  },
+  {
+    "id": "negation-and-condition",
+    "language": "pt-BR",
+    "input": "Hmm, eu, eu não apague dados se os testes falharem; por enquanto apenas identifique o problema."
+  },
+  {
+    "id": "ambiguous-um",
+    "language": "auto",
+    "input": "Um, quero um arquivo novo, mas não tenho certeza se ele deve ser JSON ou YAML."
+  },
+  {
+    "id": "long-conversation",
+    "language": "pt-BR",
+    "input": "Então, eu, eu estava olhando o comportamento desde ontem e acho que talvez a inicialização esteja demorando mais depois da última mudança. Primeiro compare a branch atual com a versão anterior, depois encontre a chamada que carrega o modelo e me diga se existe trabalho repetido. Não altere o código, não rode comandos que mudem arquivos e não assuma que o cache está vazio. Se precisar de mais contexto, pergunte antes de continuar."
+  },
+  {
+    "id": "already-concise",
+    "language": "pt-BR",
+    "input": "Revise o diff. Não altere arquivos."
+  },
+  {
+    "id": "mixed-technical-language",
+    "language": "pt-BR",
+    "input": "Hmm, eu, eu quero comparar o API response com o expected output e manter o timeout atual."
+  }
+]

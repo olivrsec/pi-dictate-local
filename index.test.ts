@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { matchesKey, setKittyProtocolActive } from "@earendil-works/pi-tui";
-import { applyNemotronMessage, cleanDisfluencies, copyTranscriptToClipboard, initialTranscript, isStopButtonClick, resolveHotkey, shouldConsumeRepeatedHotkey, transcriptForDelivery, DICTATE_CANCEL_KEY, DICTATE_TOGGLE_KEY, type TranscriptState } from "./index.ts";
+import { Input, matchesKey, setKittyProtocolActive } from "@earendil-works/pi-tui";
+import dictateExtension, { applyNemotronMessage, cleanDisfluencies, copyTranscriptToClipboard, initialTranscript, isStopButtonClick, resolveHotkey, shouldConsumeRepeatedHotkey, transcriptForDelivery, DICTATE_CANCEL_KEY, DICTATE_TOGGLE_KEY, type TranscriptState } from "./index.ts";
 import { JsonlDecoder, parseProtocolLine, ProtocolError } from "./runtime/protocol.ts";
 
 setKittyProtocolActive(true);
@@ -43,6 +43,8 @@ test("cleanup applies only to finalized delivery, not rolling fallback or empty 
   assert.equal(transcriptForDelivery({ rolling: "Hmm, eu eu", final: "Hmm. Eu, eu quero." }, "pt-BR", true), "Eu quero.");
   assert.equal(transcriptForDelivery({ rolling: "fallback", final: "Hmm, eu quero." }, "pt-BR", false), "Hmm, eu quero.");
   assert.equal(transcriptForDelivery({ rolling: "fallback", final: "" }, "pt-BR", true), "");
+  const code = "```ts\nconst hum = 'hum';\n```\n";
+  assert.equal(transcriptForDelivery({ rolling: "", final: code }, "pt-BR", true), code.replace(/\s+/g, " ").trim());
 });
 test("clipboard fallback reports success only after copying and preserves text on failure", async () => {
   let editor = "draft";
@@ -113,6 +115,39 @@ test("protocol rejects wrong version and oversized lines", () => {
   assert.throws(() => parseProtocolLine(" ".repeat(1024 * 1024 + 1)), ProtocolError);
 });
 
+test("normalized dictation inserts as text without submitting", () => {
+  const input = new Input();
+  let submitted = false;
+  input.onSubmit = () => { submitted = true; };
+  const transcript = transcriptForDelivery({ rolling: "first line\nsecond line", final: null }, "auto", false);
+  input.handleInput(transcript);
+  assert.equal(input.getValue(), "first line second line");
+  assert.equal(submitted, false);
+});
+test("dictate optimization command is extension-local and does not submit an agent turn", async () => {
+  const commands = new Map<string, any>();
+  const events: string[] = [];
+  let submitted = 0;
+  dictateExtension({
+    on: (event: string) => { events.push(event); },
+    registerCommand: (name: string, options: any) => { commands.set(name, options); },
+    registerShortcut: () => {},
+    sendUserMessage: () => { submitted++; },
+  } as any);
+  const notices: string[] = [];
+  const ctx = { ui: { notify: (message: string) => notices.push(message) } } as any;
+  const command = commands.get("dictate-optimize");
+  assert.ok(command);
+  assert.deepEqual(command.getArgumentCompletions("").map((item: any) => item.value), ["off", "clean"]);
+  assert.deepEqual(command.getArgumentCompletions("e"), []);
+  await command.handler("clean", ctx);
+  await command.handler("english", ctx);
+  await command.handler("", ctx);
+  assert.ok(notices.some((message) => message.includes("Use /dictate-optimize off or clean.")));
+  assert.ok(notices.some((message) => message.includes("next recording")));
+  assert.equal(submitted, 0);
+  assert.ok(!events.includes("input"));
+});
 test("first dictation runs setup even when asset files already exist; import stays lazy", async () => {
   const { mkdtemp, mkdir, cp, writeFile, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");

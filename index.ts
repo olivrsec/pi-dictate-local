@@ -10,7 +10,9 @@ import { appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { cleanDisfluencies, normalizeTranscript, optimizeTranscript, resolveOptimizationMode, type PromptOptimizationMode } from "./optimization.ts";
 import { startRuntime, shutdownRuntime, type RuntimeMessage } from "./runtime/index.ts";
+export { cleanDisfluencies } from "./optimization.ts";
 
 export interface TranscriptState {
   rolling: string;
@@ -24,32 +26,10 @@ export function applyNemotronMessage(state: TranscriptState, message: RuntimeMes
   return state;
 }
 
-// shortcut: handles common fillers and subject-pronoun stutters only; broaden after real examples.
-export function cleanDisfluencies(text: string, language: string): string {
-  const locale = language.toLowerCase();
-  const fillers = ["h+m+"];
-  if (locale === "auto" || locale.startsWith("pt")) fillers.push("a+h+n+", "a+h+m+");
-  // "hum" is also an English verb/noun; auto must preserve it.
-  if (locale.startsWith("pt")) fillers.push("h+u+m+");
-  if (locale === "auto" || locale.startsWith("en")) fillers.push("u+h+", "e+r+m+");
-  if (locale.startsWith("en")) fillers.push("u+m+", "e+r+");
-  const startsWithFiller = new RegExp(`^\\s*(?:${fillers.join("|")})(?![\\p{L}\\p{N}_]|-[\\p{L}])[,;.!?…]*\\s*`, "iu").test(text);
-  let cleaned = text.replace(
-    new RegExp(`(?<![\\p{L}\\p{N}_])(?:${fillers.join("|")})(?![\\p{L}\\p{N}_]|-[\\p{L}])[,;.!?…]*\\s*`, "giu"),
-    "",
-  );
-  const pronouns = "I|we|you|he|she|it|they|eu|tu|você|ele|ela|nós|vocês|eles|elas";
-  cleaned = cleaned.replace(
-    new RegExp(`(?<![\\p{L}\\p{N}_])(${pronouns})(?![\\p{L}\\p{N}_])(?:(?:\\s*[,;]\\s*|\\s+|-)\\1)+(?![\\p{L}\\p{N}_])`, "giu"),
-    "$1",
-  );
-  cleaned = cleaned.replace(/[ \t]{2,}/g, " ").replace(/\s+([,.;!?])/g, "$1").trim();
-  return startsWithFiller ? cleaned.replace(/^(\p{Ll})/u, (letter) => letter.toUpperCase()) : cleaned;
-}
 export function transcriptForDelivery(state: TranscriptState, language: string, cleanup: boolean): string {
   const rawText = state.final ?? state.rolling;
   const text = cleanup && state.final !== null ? cleanDisfluencies(rawText, language) : rawText;
-  return text.replace(/\s+/g, " ").trim();
+  return normalizeTranscript(text);
 }
 type ClipboardUI = Pick<ExtensionContext["ui"], "getEditorText" | "setEditorText" | "notify">;
 export async function copyTranscriptToClipboard(
@@ -59,7 +39,7 @@ export async function copyTranscriptToClipboard(
 ): Promise<void> {
   try {
     await copy(text);
-    ui.notify("No input field was focused; dictation was copied to the clipboard.", "warning");
+    ui.notify("Dictation was copied to the clipboard.", "warning");
   } catch {
     const current = ui.getEditorText() ?? "";
     ui.setEditorText(current + (current && !/\s$/.test(current) ? " " : "") + text);
@@ -74,7 +54,7 @@ const dbg = (message: string) => {
 };
 const LIVE_PREVIEW = false;
 const DICTATE_LANGUAGE = process.env.DICTATE_LANGUAGE ?? "auto";
-const CLEAN_DISFLUENCIES = process.env.DICTATE_CLEANUP === "1";
+const MODE_SETTING = resolveOptimizationMode(process.env.DICTATE_OPTIMIZE, process.env.DICTATE_CLEANUP);
 const PREVIEW_MAX_CHARS = 96;
 type State = "idle" | "starting" | "recording" | "stopping";
 interface EditorLike { getText(): string; setText(text: string): void }
@@ -117,6 +97,9 @@ function rmsToBlock(rms: number): string {
 export default function (pi: ExtensionAPI) {
   let state: State = "idle";
   let transcript = initialTranscript;
+  let selectedOptimizationMode: PromptOptimizationMode = MODE_SETTING.mode;
+  let activeOptimizationMode: PromptOptimizationMode = MODE_SETTING.mode;
+  let invalidModeWarned = false;
   let activeCtx: ExtensionContext | null = null;
   let flushed = false;
   let cancelled = false;
@@ -188,7 +171,12 @@ export default function (pi: ExtensionAPI) {
     if (flushed || !activeCtx) return;
     flushed = true;
     if (cancelled) return;
-    const text = transcriptForDelivery(transcript, DICTATE_LANGUAGE, CLEAN_DISFLUENCIES);
+    const rawText = transcript.final ?? transcript.rolling;
+    const result = optimizeTranscript(rawText, transcript.final === null ? "off" : activeOptimizationMode, DICTATE_LANGUAGE);
+    if (result.fallback === "empty-result" || result.fallback === "error") {
+      activeCtx.ui.notify("Prompt cleanup failed safely; the original transcript was inserted.", "warning");
+    }
+    const text = result.text;
     if (!text) return;
     if (!tuiHandle) {
       const current = activeCtx.ui.getEditorText() ?? "";
@@ -201,7 +189,10 @@ export default function (pi: ExtensionAPI) {
       const sep = current && !/\s$/.test(current) ? " " : "";
       target.editor.setText(current + sep + text); tuiHandle.requestRender?.(); return;
     }
-    if (target?.kind === "typable") { target.component.handleInput(text); tuiHandle.requestRender?.(); return; }
+    if (target?.kind === "typable") {
+      if (/[\u0000-\u001f\u007f-\u009f]/u.test(text)) { void copyTranscriptToClipboard(text, activeCtx.ui); return; }
+      target.component.handleInput(text); tuiHandle.requestRender?.(); return;
+    }
     void copyTranscriptToClipboard(text, activeCtx.ui);
   };
   const cleanupSession = (deliver: boolean) => {
@@ -224,6 +215,7 @@ export default function (pi: ExtensionAPI) {
   };
   const startDictation = async (ctx: ExtensionContext) => {
     activeCtx = ctx; transcript = initialTranscript; flushed = false; cancelled = false;
+    activeOptimizationMode = selectedOptimizationMode;
     const myGeneration = ++generation;
     state = "starting"; startSpinner("loading Nemotron…");
     try {
@@ -300,11 +292,32 @@ export default function (pi: ExtensionAPI) {
   };
   pi.on("session_start", (_event, ctx) => {
     lastCtx = ctx;
+    if (MODE_SETTING.invalid && !invalidModeWarned) {
+      ctx.ui.notify("Invalid DICTATE_OPTIMIZE value; using off. Choose off or clean.", "warning");
+      invalidModeWarned = true;
+    }
     if (ctx.mode !== "tui" || tuiHandle) return;
     ctx.ui.setWidget("dictate-tui-handle", (tui: any) => {
       tuiHandle = tui; removeInputListener = tui.addInputListener(onGlobalInput);
       return { render: () => [], invalidate: () => {} };
     });
+  });
+  pi.registerCommand("dictate-optimize", {
+    description: "Set dictation cleanup: off or clean",
+    getArgumentCompletions: (prefix: string) => ["off", "clean"].filter((mode) => mode.startsWith(prefix)).map((value) => ({ value, label: value })),
+    handler: async (args, ctx) => {
+      const value = args.trim().toLowerCase();
+      if (!value) {
+        ctx.ui.notify(`Dictation cleanup mode: ${selectedOptimizationMode}`, "info");
+        return;
+      }
+      if (!(["off", "clean"] as string[]).includes(value)) {
+        ctx.ui.notify("Use /dictate-optimize off or clean.", "warning");
+        return;
+      }
+      selectedOptimizationMode = value as PromptOptimizationMode;
+      ctx.ui.notify(`Dictation cleanup set to ${selectedOptimizationMode}; it applies to the next recording.`, "info");
+    },
   });
   pi.registerShortcut(DICTATE_TOGGLE_KEY, { description: `Toggle voice dictation (${DICTATE_TOGGLE_KEY})`, handler: async (ctx) => toggleDictation(ctx) });
   pi.registerShortcut(DICTATE_CANCEL_KEY, { description: "Cancel voice dictation (discard transcript)", handler: async () => { await cancelDictation(); } });
