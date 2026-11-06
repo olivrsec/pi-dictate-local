@@ -5,7 +5,7 @@
  */
 import { copyToClipboard } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, isKeyRelease, isKeyRepeat, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Key, matchesKey, isKeyRelease, isKeyRepeat, truncateToWidth, visibleWidth, type KeyId } from "@earendil-works/pi-tui";
 import { appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -80,8 +80,18 @@ type State = "idle" | "starting" | "recording" | "stopping";
 interface EditorLike { getText(): string; setText(text: string): void }
 type Target = { kind: "editor"; editor: EditorLike } | { kind: "typable"; component: { handleInput(data: string): void } };
 const asEditorLike = (value: any): EditorLike | null => value && typeof value.getText === "function" && typeof value.setText === "function" ? value : null;
-export const DICTATE_TOGGLE_KEY = Key.ctrl("d");
-export const DICTATE_CANCEL_KEY = Key.ctrlShift("n");
+export function resolveHotkey(value: string | undefined, fallback: KeyId): KeyId {
+  if (!value?.trim()) return fallback;
+  const parts = value.trim().toLowerCase().split("+");
+  const key = parts.pop()!;
+  const modifiers = ["ctrl", "shift", "alt", "super"];
+  if (!/^[a-z0-9]$/.test(key) || parts.some((part) => !modifiers.includes(part)) || new Set(parts).size !== parts.length) {
+    throw new Error(`Invalid Pi Dictate hotkey ${JSON.stringify(value)}; use distinct modifiers and one letter or digit.`);
+  }
+  return [...parts, key].join("+") as KeyId;
+}
+export const DICTATE_TOGGLE_KEY = resolveHotkey(process.env.DICTATE_TOGGLE_KEY, Key.ctrlShift("m"));
+export const DICTATE_CANCEL_KEY = resolveHotkey(process.env.DICTATE_CANCEL_KEY, Key.ctrlShift("n"));
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_INTERVAL_MS = 80;
 const METER_CELLS = 6;
@@ -284,8 +294,8 @@ export default function (pi: ExtensionAPI) {
     if (isKeyRelease(data) || isKeyRepeat(data)) {
       return shouldConsumeRepeatedHotkey(data) ? { consume: true } : undefined;
     }
-    if (matchesKey(data, DICTATE_TOGGLE_KEY)) { dbg(`ctrl+d state=${state}`); if (lastCtx) toggleDictation(lastCtx); return { consume: true }; }
-    if (matchesKey(data, DICTATE_CANCEL_KEY)) { dbg(`ctrl+shift+n state=${state}`); void cancelDictation(); return { consume: true }; }
+    if (matchesKey(data, DICTATE_TOGGLE_KEY)) { dbg(`${DICTATE_TOGGLE_KEY} state=${state}`); if (lastCtx) toggleDictation(lastCtx); return { consume: true }; }
+    if (matchesKey(data, DICTATE_CANCEL_KEY)) { dbg(`${DICTATE_CANCEL_KEY} state=${state}`); void cancelDictation(); return { consume: true }; }
     return undefined;
   };
   pi.on("session_start", (_event, ctx) => {
@@ -296,7 +306,7 @@ export default function (pi: ExtensionAPI) {
       return { render: () => [], invalidate: () => {} };
     });
   });
-  pi.registerShortcut(DICTATE_TOGGLE_KEY, { description: "Toggle voice dictation (Ctrl+D, local Nemotron)", handler: async (ctx) => toggleDictation(ctx) });
+  pi.registerShortcut(DICTATE_TOGGLE_KEY, { description: `Toggle voice dictation (${DICTATE_TOGGLE_KEY})`, handler: async (ctx) => toggleDictation(ctx) });
   pi.registerShortcut(DICTATE_CANCEL_KEY, { description: "Cancel voice dictation (discard transcript)", handler: async () => { await cancelDictation(); } });
   pi.on("session_shutdown", () => {
     cancelled = true;

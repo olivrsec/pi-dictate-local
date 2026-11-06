@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { matchesKey, setKittyProtocolActive } from "@earendil-works/pi-tui";
-import { applyNemotronMessage, cleanDisfluencies, copyTranscriptToClipboard, initialTranscript, isStopButtonClick, shouldConsumeRepeatedHotkey, transcriptForDelivery, DICTATE_CANCEL_KEY, DICTATE_TOGGLE_KEY, type TranscriptState } from "./index.ts";
+import { applyNemotronMessage, cleanDisfluencies, copyTranscriptToClipboard, initialTranscript, isStopButtonClick, resolveHotkey, shouldConsumeRepeatedHotkey, transcriptForDelivery, DICTATE_CANCEL_KEY, DICTATE_TOGGLE_KEY, type TranscriptState } from "./index.ts";
 import { JsonlDecoder, parseProtocolLine, ProtocolError } from "./runtime/protocol.ts";
 
 setKittyProtocolActive(true);
@@ -64,19 +64,27 @@ test("clipboard fallback reports success only after copying and preserves text o
     assert.equal(editor, draft + (draft === "draft\\s" ? " " : "") + "text");
   }
 });
-test("toggle key matches Ctrl+D in standard and Kitty terminal encodings", () => {
-  assert.ok(matchesKey("\x04", DICTATE_TOGGLE_KEY));
-  assert.ok(matchesKey("\x1b[100;5u", DICTATE_TOGGLE_KEY));
+test("public toggle defaults to original Ctrl+Shift+M Kitty sequence", () => {
+  assert.equal(DICTATE_TOGGLE_KEY, "ctrl+shift+m");
+  assert.ok(matchesKey("\x1b[109;6u", DICTATE_TOGGLE_KEY));
 });
-test("cancel key matches verified ctrl+shift+n sequence", () => assert.ok(matchesKey("\x1b[110;6u", DICTATE_CANCEL_KEY)));
-test("toggle key excludes the previous ctrl+shift+m sequence", () => assert.ok(!matchesKey("\x1b[109;6u", DICTATE_TOGGLE_KEY)));
-test("Ctrl+D repeats and releases are consumed without retoggling", () => {
-  assert.ok(shouldConsumeRepeatedHotkey("\x1b[100;5:2u"));
-  assert.ok(shouldConsumeRepeatedHotkey("\x1b[100;5:3u"));
+test("public cancel defaults to original Ctrl+Shift+N Kitty sequence", () => {
+  assert.equal(DICTATE_CANCEL_KEY, "ctrl+shift+n");
+  assert.ok(matchesKey("\x1b[110;6u", DICTATE_CANCEL_KEY));
+});
+test("personal hotkey overrides accept modifier plus letter values", () => {
+  assert.equal(resolveHotkey("ctrl+d", DICTATE_TOGGLE_KEY), "ctrl+d");
+  assert.equal(resolveHotkey("ctrl+shift+n", DICTATE_CANCEL_KEY), "ctrl+shift+n");
+  assert.equal(resolveHotkey(undefined, DICTATE_TOGGLE_KEY), "ctrl+shift+m");
+  assert.throws(() => resolveHotkey("ctrl+ctrl+d", DICTATE_TOGGLE_KEY), /Invalid Pi Dictate hotkey/);
+});
+test("Ctrl+Shift+M repeats and releases are consumed without retoggling", () => {
+  assert.ok(shouldConsumeRepeatedHotkey("\x1b[109;6:2u"));
+  assert.ok(shouldConsumeRepeatedHotkey("\x1b[109;6:3u"));
   assert.ok(!shouldConsumeRepeatedHotkey("\x1b[97;1:2u"));
 });
 test("hotkeys remain distinct", () => {
-  assert.ok(!matchesKey("\x04", DICTATE_CANCEL_KEY));
+  assert.ok(!matchesKey("\x1b[109;6u", DICTATE_CANCEL_KEY));
   assert.ok(!matchesKey("\x1b[110;6u", DICTATE_TOGGLE_KEY));
 });
 test("Stop button handles only left clicks inside its visible bounds", () => {
@@ -103,4 +111,26 @@ test("JSONL decoder preserves split UTF-8 characters", () => {
 test("protocol rejects wrong version and oversized lines", () => {
   assert.throws(() => parseProtocolLine('{"v":2,"type":"hello"}'), ProtocolError);
   assert.throws(() => parseProtocolLine(" ".repeat(1024 * 1024 + 1)), ProtocolError);
+});
+
+test("first dictation runs setup even when asset files already exist; import stays lazy", async () => {
+  const { mkdtemp, mkdir, cp, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { pathToFileURL } = await import("node:url");
+  const { execFileSync } = await import("node:child_process");
+  const directory = await mkdtemp(join(tmpdir(), "dictate-first-use-"));
+  try {
+    await cp(new URL("./runtime/", import.meta.url), join(directory, "runtime"), { recursive: true });
+    await mkdir(join(directory, "scripts"));
+    await writeFile(join(directory, "scripts", "setup.mjs"), 'console.error("setup reached"); process.exit(23);');
+    await writeFile(join(directory, "asset"), "unverified asset");
+    execFileSync(process.execPath, ["--input-type=module", "-e", `
+      import assert from 'node:assert/strict';
+      const { startRuntime } = await import(${JSON.stringify(pathToFileURL(join(directory, "runtime", "index.ts")).href)});
+      await assert.rejects(startRuntime(), /setup reached/);
+    `], { env: { ...process.env, DICTATE_RUNTIME_PATH: join(directory, "asset"), DICTATE_MODEL_PATH: join(directory, "asset") } });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
