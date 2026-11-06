@@ -1,0 +1,9 @@
+[submodule "native/vendor/miniaudio"]
+	path = native/vendor/miniaudio
+	url = https://github.com/mackron/miniaudio.git
+[submodule "native/vendor/nlohmann-json"]
+	path = native/vendor/nlohmann-json
+	url = https://github.com/nlohmann/json.git
+[submodule "native/vendor/NeMo-Speech.cpp"]
+	path = native/vendor/NeMo-Speech.cpp
+	url = https://github.com/NVIDIA/NeMo-Speech.cpp.git

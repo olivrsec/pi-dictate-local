@@ -1,118 +1,106 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { matchesKey, setKittyProtocolActive } from "@earendil-works/pi-tui";
-import {
-  applySherpaMessage,
-  createDownsampler,
-  initialTranscript,
-  DICTATE_CANCEL_KEY,
-  DICTATE_TOGGLE_KEY,
-  type TranscriptState,
-} from "./index.ts";
+import { applyNemotronMessage, cleanDisfluencies, copyTranscriptToClipboard, initialTranscript, isStopButtonClick, shouldConsumeRepeatedHotkey, transcriptForDelivery, DICTATE_CANCEL_KEY, DICTATE_TOGGLE_KEY, type TranscriptState } from "./index.ts";
+import { JsonlDecoder, parseProtocolLine, ProtocolError } from "./runtime/protocol.ts";
 
-// Verified sequences from the user's terminal (st, CSI-u / Kitty protocol).
-// ctrl+shift modifier order is VTE-style (;6 = shift|ctrl); pi-tui parses it
-// as such. Regression guard for the dwm hotkey collision fix.
 setKittyProtocolActive(true);
+const event = (type: string, text: string): any => ({ v: 1, type, text });
 
-const msg = (text: string, isFinal: boolean) => JSON.stringify({ text, is_final: isFinal });
-
-test("rolling message updates the rolling text", () => {
-  const s: TranscriptState = applySherpaMessage(initialTranscript, msg("Hallo", false));
-  assert.equal(s.rolling, "Hallo");
-  assert.equal(s.final, null);
+test("transcript updates replace previous rolling text", () => {
+  let state: TranscriptState = applyNemotronMessage(initialTranscript, event("transcript_update", "Hallo"));
+  state = applyNemotronMessage(state, event("transcript_update", "Hallo Welt."));
+  assert.equal(state.rolling, "Hallo Welt.");
+  assert.equal(state.final, null);
 });
-
-test("rolling message replaces the previous rolling text", () => {
-  let s = applySherpaMessage(initialTranscript, msg("Hallo", false));
-  s = applySherpaMessage(s, msg("Hallo Welt.", false));
-  assert.equal(s.rolling, "Hallo Welt.");
-  assert.equal(s.final, null);
+test("final transcript latches, including an empty final", () => {
+  let state = applyNemotronMessage(initialTranscript, event("transcript_update", "Hallo"));
+  state = applyNemotronMessage(state, event("recording_finalized", ""));
+  state = applyNemotronMessage(state, event("transcript_update", "late"));
+  assert.equal(state.final, "");
+  assert.equal(state.rolling, "Hallo");
 });
-
-test("final message latches the final text", () => {
-  let s = applySherpaMessage(initialTranscript, msg("Hallo", false));
-  s = applySherpaMessage(s, msg("Hallo Welt.", true));
-  assert.equal(s.final, "Hallo Welt.");
+test("unrelated protocol messages do not change transcript", () => {
+  assert.equal(applyNemotronMessage(initialTranscript, event("audio_level", "0.2")), initialTranscript);
 });
-
-test("final without preceding rolling latches the empty text (silence case)", () => {
-  const s = applySherpaMessage(initialTranscript, msg("", true));
-  assert.equal(s.final, "");
+test("opt-in cleanup removes common Brazilian Portuguese and English disfluencies", () => {
+  assert.equal(cleanDisfluencies("Hmm, eu, eu quero testar.", "pt-BR"), "Eu quero testar.");
+  assert.equal(cleanDisfluencies("Hum, você você pode?", "pt-BR"), "Você pode?");
+  assert.equal(cleanDisfluencies("Um, I, I think, uh, we can.", "en-US"), "I think, we can.");
+  assert.equal(cleanDisfluencies("Hmm, eu eu quero um arquivo. Hmm, I I can test.", "auto"), "Eu quero um arquivo. I can test.");
 });
-
-test("messages after the final are ignored", () => {
-  let s = applySherpaMessage(initialTranscript, msg("Erst.", true));
-  s = applySherpaMessage(s, msg("Später.", false));
-  s = applySherpaMessage(s, msg("Noch später.", true));
-  assert.equal(s.final, "Erst.");
-  assert.equal(s.rolling, "");
+test("auto and English preserve hum as a verb or noun and auto preserves Portuguese um", () => {
+  for (const language of ["auto", "en-US"]) {
+    assert.equal(cleanDisfluencies("Please hum a tune. I like the hum of the engine.", language), "Please hum a tune. I like the hum of the engine.");
+  }
+  assert.equal(cleanDisfluencies("Quero um arquivo.", "auto"), "Quero um arquivo.");
 });
-
-test("non-JSON and non-string messages are ignored", () => {
-  let s = applySherpaMessage(initialTranscript, "garbage not json");
-  s = applySherpaMessage(s, JSON.stringify({ is_final: false })); // no text field
-  assert.equal(s.rolling, "");
-  assert.equal(s.final, null);
+test("cleanup preserves repeated negations, emphatic words, and English affirmative uh-huh", () => {
+  assert.equal(cleanDisfluencies("não, não apague; no, no delete; very, very good; had had; uh-huh.", "auto"), "não, não apague; no, no delete; very, very good; had had; uh-huh.");
 });
-
-// ── Hotkeys (seam S2) ──────────────────────────────────────────────────
-// The verified terminal sequences MUST match the exported key ids, so the
-// dwm collision fix (alt+m/n -> ctrl+shift+m/n) can't silently regress.
-
-test("toggle key matches the verified ctrl+shift+m press sequence", () => {
-  assert.ok(matchesKey("\x1b[109;6u", DICTATE_TOGGLE_KEY));
+test("cleanup applies only to finalized delivery, not rolling fallback or empty final", () => {
+  assert.equal(transcriptForDelivery({ rolling: "Hmm, eu eu", final: null }, "pt-BR", true), "Hmm, eu eu");
+  assert.equal(transcriptForDelivery({ rolling: "Hmm, eu eu", final: "Hmm. Eu, eu quero." }, "pt-BR", true), "Eu quero.");
+  assert.equal(transcriptForDelivery({ rolling: "fallback", final: "Hmm, eu quero." }, "pt-BR", false), "Hmm, eu quero.");
+  assert.equal(transcriptForDelivery({ rolling: "fallback", final: "" }, "pt-BR", true), "");
 });
-
-test("cancel key matches the verified ctrl+shift+n press sequence", () => {
-  assert.ok(matchesKey("\x1b[110;6u", DICTATE_CANCEL_KEY));
+test("clipboard fallback reports success only after copying and preserves text on failure", async () => {
+  let editor = "draft";
+  const messages: string[] = [];
+  const ui = {
+    getEditorText: () => editor,
+    setEditorText: (text: string) => { editor = text; },
+    notify: (message: string) => { messages.push(message); },
+  };
+  await copyTranscriptToClipboard("copied text", ui as any, async () => {});
+  assert.equal(editor, "draft");
+  assert.match(messages.at(-1)!, /copied to the clipboard/);
+  await copyTranscriptToClipboard("recover me", ui as any, async () => { throw new Error("no clipboard"); });
+  assert.equal(editor, "draft recover me");
+  assert.match(messages.at(-1)!, /added to the main editor/);
+  for (const draft of ["", "draft ", "draft\n", "draft\\s"]) {
+    editor = draft;
+    await copyTranscriptToClipboard("text", ui as any, async () => { throw new Error("no clipboard"); });
+    assert.equal(editor, draft + (draft === "draft\\s" ? " " : "") + "text");
+  }
 });
-
-test("toggle key does NOT match the old alt+m sequence", () => {
-  assert.ok(!matchesKey("\x1bm", DICTATE_TOGGLE_KEY));
+test("toggle key matches Ctrl+D in standard and Kitty terminal encodings", () => {
+  assert.ok(matchesKey("\x04", DICTATE_TOGGLE_KEY));
+  assert.ok(matchesKey("\x1b[100;5u", DICTATE_TOGGLE_KEY));
 });
-
-test("keys are distinct from each other", () => {
-  assert.ok(!matchesKey("\x1b[109;6u", DICTATE_CANCEL_KEY));
+test("cancel key matches verified ctrl+shift+n sequence", () => assert.ok(matchesKey("\x1b[110;6u", DICTATE_CANCEL_KEY)));
+test("toggle key excludes the previous ctrl+shift+m sequence", () => assert.ok(!matchesKey("\x1b[109;6u", DICTATE_TOGGLE_KEY)));
+test("Ctrl+D repeats and releases are consumed without retoggling", () => {
+  assert.ok(shouldConsumeRepeatedHotkey("\x1b[100;5:2u"));
+  assert.ok(shouldConsumeRepeatedHotkey("\x1b[100;5:3u"));
+  assert.ok(!shouldConsumeRepeatedHotkey("\x1b[97;1:2u"));
+});
+test("hotkeys remain distinct", () => {
+  assert.ok(!matchesKey("\x04", DICTATE_CANCEL_KEY));
   assert.ok(!matchesKey("\x1b[110;6u", DICTATE_TOGGLE_KEY));
 });
-
-// ── Downsampling (48 kHz stereo → 16 kHz mono) ─────────────────────
-
-test("downsample: constant stereo input stays constant mono (unit DC gain)", () => {
-  // 1s of 48k stereo at value 1000 (L=R=1000)
-  const input = Buffer.alloc(48000 * 2 * 2);
-  for (let i = 0; i < input.length; i += 2) input.writeInt16LE(1000, i);
-  const out = createDownsampler().feed(input);
-  // 48000 input samples → floor((48000 - 25) / 3) output samples (FIR priming)
-  assert.equal(out.length, 2 * Math.floor((48000 - 25) / 3));
-  for (let i = 0; i < out.length; i += 2) assert.equal(out.readInt16LE(i), 1000);
+test("Stop button handles only left clicks inside its visible bounds", () => {
+  const click = { type: "click", button: "left", x: 12, y: 0 };
+  assert.ok(isStopButtonClick(click, 10, 8));
+  assert.ok(!isStopButtonClick({ ...click, x: 18 }, 10, 8));
+  assert.ok(!isStopButtonClick({ ...click, button: "right" }, 10, 8));
+  assert.ok(!isStopButtonClick({ ...click, y: 1 }, 10, 8));
+  assert.ok(!isStopButtonClick({ ...click, type: "press" }, 10, 8));
 });
-
-test("downsample: chunked feed (mid-frame split) == single feed", () => {
-  // 50ms of a 1 kHz sine at 48k stereo (L=R)
-  const frames = 2400;
-  const full = Buffer.alloc(frames * 4);
-  for (let f = 0; f < frames; f++) {
-    const s = Math.round(10000 * Math.sin((2 * Math.PI * 1000 * f) / 48000));
-    full.writeInt16LE(s, f * 4);
-    full.writeInt16LE(s, f * 4 + 2);
-  }
-  const outWhole = createDownsampler().feed(full);
-  const ds = createDownsampler();
-  const split = 4002; // mid-frame on purpose (4002 % 4 = 2)
-  const outA = ds.feed(full.subarray(0, split));
-  const outB = ds.feed(full.subarray(split));
-  assert.deepEqual(Buffer.concat([outA, outB]), outWhole);
+test("JSONL decoder accepts split lines", () => {
+  const decoder = new JsonlDecoder();
+  assert.deepEqual(decoder.feed('{"v":1,"type":"ready"}'), []);
+  assert.deepEqual(decoder.feed("\n"), [{ v: 1, type: "ready" }]);
+  decoder.finish();
 });
-
-test("downsample: priming — no output until 28 frames accumulated", () => {
-  const frame = Buffer.alloc(4);
-  frame.writeInt16LE(500, 0);
-  frame.writeInt16LE(500, 2);
-  const ds = createDownsampler();
-  for (let i = 0; i < 27; i++) assert.equal(ds.feed(Buffer.from(frame)).length, 0);
-  const out = ds.feed(Buffer.from(frame)); // 28th frame
-  assert.equal(out.length, 2);
-  assert.equal(out.readInt16LE(0), 500);
+test("JSONL decoder preserves split UTF-8 characters", () => {
+  const decoder = new JsonlDecoder();
+  const encoded = Buffer.from('{"v":1,"type":"ready","text":"Hé"}\n');
+  const split = encoded.indexOf(0xc3) + 1;
+  assert.deepEqual(decoder.feed(encoded.subarray(0, split)), []);
+  assert.equal(decoder.feed(encoded.subarray(split))[0]?.text, "Hé");
+});
+test("protocol rejects wrong version and oversized lines", () => {
+  assert.throws(() => parseProtocolLine('{"v":2,"type":"hello"}'), ProtocolError);
+  assert.throws(() => parseProtocolLine(" ".repeat(1024 * 1024 + 1)), ProtocolError);
 });

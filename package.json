@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Minimal voice dictation for pi (local sherpa-onnx server)",
+  "description": "Minimal voice dictation for pi (local Nemotron runtime)",
   "license": "MIT",
   "keywords": [
     "pi-package"
@@ -15,8 +15,12 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --test index.test.ts"
+    "test": "node --test index.test.ts",
+    "native:build": "node scripts/build-native.mjs",
+    "native:test": "ctest --test-dir native/build -C Release --output-on-failure",
+    "model:download": "node scripts/download-model.mjs"
   },
+  "engines": { "node": ">=24.0.0" },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.80.10",
     "@earendil-works/pi-tui": "0.80.10",

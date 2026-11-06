@@ -1,153 +1,115 @@
-# dictate
+# Pi Dictate
 
-Minimal voice dictation for [pi][1], transcribed by a **local** [sherpa-onnx][2] server.
-No floating bubbles, no menu bar app, no cloud, no API key.
+Dictate into Pi with NVIDIA's Nemotron streaming speech model. Pi Dictate runs
+transcription on your computer and inserts the recognized text into Pi's current
+input. When you submit that text, Pi sends it to the provider configured for
+your session.
 
-Repository: [sebastianzehner/pi-dictate](https://github.com/sebastianzehner/pi-dictate)
+## Use it
 
-Fork of [amosblomqvist/pi-dictate](https://github.com/amosblomqvist/pi-dictate), ported to a local sherpa-onnx backend
-and native Linux (X11/PulseAudio) capture — see [What changed](#what-changed) below.
+1. Focus a Pi text input and press **Ctrl+D** to start recording.
+2. Press **Ctrl+D** again, or click **[ Stop ]** beside the listening meter in
+   fullscreen mode, to finish.
+3. Press **Ctrl+Shift+N** to cancel and discard the recording.
 
-- **Toggle:** `ctrl+shift+m` (start, then stop) — works anywhere in pi: chat input, quiz popups,
-  ask_user_question, editor dialogs, selectors, intercepted before whatever has focus.
-- **Cancel:** `ctrl+shift+n` — discards the in-flight transcript, safe to press anytime.
-- **Where text goes:** the focused input **when you stop**, always appended, never replaces:
-  - Editor or popup input → appended directly.
-  - Opaque dialogs (quiz, ask_user_question) → typed as keystrokes; **Tab into the note/Other field first**.
-  - Nothing focused → copied to the clipboard (`xclip`), with a notification.
-- **Start guard:** no focused input → dictation doesn't start, a notification explains why.
-- **Live feedback:** a red `●` plus a real-time mic-level meter (`● ▂▅▇ listening…`).
-  Set `LIVE_PREVIEW = true` in `index.ts` to also show the rolling transcript.
-  On stop: a brief `finalizing…` spinner, usually too fast to notice on a local server.
-- **Backend:** local sherpa-onnx server, [de-kroko-2025-08-06][3] (German streaming Zipformer).
-  Handles common English words too; swap in any other sherpa-onnx model server-side for other languages.
-- **Real-time:** transcribed while you talk, inserted in one shot on stop.
-  Typically tens of milliseconds over the LAN, punctuation included natively.
+Pi Dictate appends text to editor fields. In other dialogs, it types into the
+focused field, so press Tab to reach that field first. If no text field has
+focus when recording stops, Pi Dictate tries to copy the transcript. If Pi's
+clipboard helper reports failure, Pi Dictate adds the transcript to the main
+editor and shows a warning. Pi may use the terminal's OSC 52 clipboard support,
+which cannot confirm that your terminal accepted the copy.
 
-## What changed
+During recording, you see an audio-level meter, not a live transcript. Pi Dictate
+inserts text after you stop.
 
-Everything that differs from the upstream project:
+**Ctrl+D overrides Pi's delete-forward and exit-on-empty actions while this
+extension is loaded.**
 
-- **Backend:** Deepgram Nova-3 (cloud, API key) → local sherpa-onnx server, no API key, no cost.
-- **Platform:** macOS → Linux (X11, PulseAudio/PipeWire), see Requirements below.
-- **Capture:** `sox`/`rec` → `parec`, native 48 kHz with an in-process FIR downsampler, see [How it works](#how-it-works).
-- **Hotkeys:** `alt+m`/`alt+n` → `ctrl+shift+m`/`ctrl+shift+n`, avoiding a dwm shortcut collision.
-- **Clipboard fallback:** `pbcopy` → `xclip`.
+## Install from source
+
+Pi Dictate needs a native runtime and a separate model download. Clone the
+repository with its pinned dependencies, then build both:
+
+```bash
+git clone --recurse-submodules https://github.com/olivrsec/pi-dictate-local.git
+cd pi-dictate-local
+npm ci
+npm run native:build
+npm run model:download
+pi install .
+```
+
+Pi loads this local package from the checkout, so keep the directory in place.
+Start Pi from any directory after installation. The build puts the runtime in
+`native/install/`. The download script saves the 742 MB model under
+`~/.local/share/pi-dictate/` and checks its size and SHA-256 digest. Read
+[docs/LICENSING.md](docs/LICENSING.md) and the NVIDIA notice before you
+redistribute the model.
 
 ## Requirements
 
-Linux with X11 and PulseAudio/PipeWire (`pulseaudio-utils`, for `parec`).
-Wayland isn't supported yet: `xclip` needs X11, would need a `wl-copy` fallback.
+- Pi 1.5.0 or newer
+- Node.js 24 or newer
+- Git with submodule support, CMake 3.26 or newer, a C++17 compiler, and Bash
+- On Windows, Git for Windows (Git Bash) and a C++ toolchain
+- On macOS, Xcode Command Line Tools and macOS 13 or newer
+- An available microphone
 
-## Install
+The build scripts include Linux, macOS, and Windows targets for x64 and ARM64.
+I verified this checkout on Linux x86-64. The x86-64 CPU build requires AVX2,
+FMA, F16C, and BMI2 instructions. CPU inference is the default.
 
-```bash
-pi install git:github.com/sebastianzehner/pi-dictate
+## Settings
+
+Set these variables before starting Pi:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DICTATE_RUNTIME_PATH` | `native/install/pi-dictate-runtime` (`.exe` on Windows) | Path to the native runtime |
+| `DICTATE_MODEL_PATH` | `~/.local/share/pi-dictate/nemotron-3.5-asr-streaming-0.6b-q8_0.gguf` | Model path; also used by the download script |
+| `DICTATE_LANGUAGE` | `auto` | Use automatic detection or select `pt-BR` or `en-US` |
+| `DICTATE_CLEANUP` | off | Set to `1` to remove selected fillers and repeated subject pronouns from final transcripts |
+| `DICTATE_DEBUG` | off | Set to `1` to log extension events to your system's temporary directory |
+
+The cleanup is a text heuristic. It removes common filler sounds and immediate
+repetitions of selected subject pronouns. It preserves repeated negations,
+other repeated words, and live hypotheses. In automatic language mode, it keeps
+ambiguous words such as `um` and `hum`; use an explicit locale to remove those
+fillers. It does not repair syllable stutters or repeated phrases, and it can
+remove intentional filler or pronoun repetitions.
+
+## Terminal keys
+
+Ctrl+D works with the standard terminal encoding, but it takes over the Pi
+shortcuts noted above. Ctrl+Shift+N requires a terminal that sends the Kitty
+keyboard protocol. In tmux, add:
+
+```tmux
+set -g extended-keys on
+set -g extended-keys-format csi-u
 ```
 
-Or manually: copy `index.ts` to `~/.pi/agent/extensions/dictate/index.ts`.
-
-## Setup
+## Build and test
 
 ```bash
-pacman -S pulseaudio-utils xclip   # pulseaudio-utils provides `parec`
+npm run check
+npm test
+npm run native:test
 ```
 
-The STT server must be running (Docker, default port 6006):
+`npm run native:test` runs after `npm run native:build`. The automated tests
+cover TypeScript behavior, protocol handling, native JSONL parsing, and audio
+level calculations. They do not test microphone recognition. Check your
+operating system's microphone permissions if recording cannot start. If the
+runtime reports an illegal instruction, your x86-64 CPU may lack one of the
+required features above.
 
-```bash
-docker compose -f <path-to-sherpa-compose>/compose.yaml up -d
-```
+A runtime failure may leave only a rolling transcript, which can be incomplete.
+The normal stop path waits for Nemotron's final transcript before inserting
+text.
 
-Verify reachability: `ss -tlnp | grep 6006` (server host), or
-`timeout 2 bash -c 'exec 3<>/dev/tcp/<host>/6006 && echo open'` (pi host).
+## Attribution
 
-## Configuration
-
-Environment variables, read when the extension loads (restart pi after changes):
-
-| Variable          | Default                    | Effect                                                   |
-| ----------------- | -------------------------- | -------------------------------------------------------- |
-| `DICTATE_STT_URL` | `ws://mac-studio.lan:6006` | WebSocket URL of the sherpa-onnx server                  |
-| `DICTATE_DEBUG`   | off                        | `1` appends lifecycle events to `/tmp/dictate-debug.log` |
-
-## Usage
-
-1. Focus any pi input field — chat input, quiz note field, ask_user_question answer box.
-2. Press `ctrl+shift+m` — status row shows `● ▁▂▃▅ listening…`, bars move with your voice.
-3. Talk.
-4. Press `ctrl+shift+m` again — spinner (`⠋ finalizing…`), then the text lands in the focused input.
-   Focus is resolved fresh at stop time, so text goes wherever is focused then, not where you started.
-
-Run `/reload` after install or after editing `index.ts`.
-
-## How it works
-
-- `parec` captures 48 kHz stereo PCM natively (50 ms buffer); an in-process FIR filter decimates it 3:1 to the
-  16 kHz mono the server expects.
-- A WebSocket pipes the PCM to the local sherpa-onnx server as binary frames.
-- The server replies with JSON `{"text", "is_final"}`: a rolling text that replaces itself each update, then one
-  final after `DONE`.
-  The server doesn't close the connection, so the client does.
-- On stop: the final if it arrived, otherwise the last rolling text (best effort), or a 3s timeout forces it.
-- The level meter maps each chunk's RMS to a bar glyph, shifted through a 6-cell ring every 60ms.
-- **Focus-aware delivery:** an input listener runs before the focused component, so hotkeys work inside dialogs
-  too.
-  Key release/repeat events are filtered so one press toggles once.
-  On stop: editor-like components get a direct text append; opaque components (dialogs) get it as synthetic
-  keystrokes.
-
-## Hotkeys and terminals
-
-Hotkeys are `ctrl+shift`-based because `alt+m`/`alt+n` collided with dwm shortcuts.
-Requires the terminal to emit CSI-u (Kitty protocol): `\x1b[109;6u` (m), `\x1b[110;6u` (n).
-
-- **st**: `mappedkeys[]` in `config.h` adjusted to emit them (terminal-side, not in this repo).
-- **tmux** (3.5+): forward modified keys in CSI-u form, or `ctrl+shift+m` collapses to Enter:
-
-  ```text
-  set -g extended-keys on
-  set -g extended-keys-format csi-u
-  ```
-
-  See [https://pi.dev/docs/latest/tmux](https://pi.dev/docs/latest/tmux) for the full pi-on-tmux keyboard guide.
-
-## Customizing
-
-All knobs are at the top of `index.ts`:
-
-- **Hotkeys:** `DICTATE_TOGGLE_KEY` / `DICTATE_CANCEL_KEY`, pinned by `index.test.ts` against the verified sequences.
-- **STT server / debug:** the `DICTATE_*` environment variables (see Configuration).
-- **Live preview:** `LIVE_PREVIEW` (default off), `PREVIEW_MAX_CHARS` (width, tail-truncated).
-- **Level meter:** `METER_CELLS`, `METER_TICK_MS`, `METER_FLOOR_DB`/`METER_CEILING_DB` (loudness range).
-
-## Testing
-
-```bash
-npm run check   # tsc --noEmit
-npm test        # node --test (reducer + hotkey seams, no network)
-```
-
-## Troubleshooting
-
-- **"STT server error (ws://…)"** — server unreachable: check `docker ps`, the port, and firewall/route.
-  `DICTATE_DEBUG=1` logs the WebSocket lifecycle to `/tmp/dictate-debug.log`.
-- **"Failed to spawn `parec`"** — `pacman -S pulseaudio-utils`, verify with `which parec`.
-- **No mic input** — check the level meter: flat bars while talking means no audio is reaching `parec`.
-  PulseAudio/PipeWire: make sure the terminal is allowed to open the default source.
-- **Nothing happens after stop** — errors surface as pi notifications.
-  "No input field focused" means the transcript went to the clipboard instead — paste with `ctrl+shift+v`.
-- **Text vanished into a quiz/ask dialog** — the option list, not its text field, had focus.
-  Tab into the note/Other field before toggling dictation.
-- **Hotkeys don't fire in tmux** — it's collapsing `ctrl+shift+m` to Enter; enable `extended-keys` as shown above.
-- **Garbage English transcription** — the model is German (`de-kroko`), though it usually gets English words
-  right too; use an English model if you dictate mostly English.
-- **Need logs?** `DICTATE_DEBUG=1` appends timestamped lifecycle events to `/tmp/dictate-debug.log`.
-
-## License
-
-MIT, see [LICENSE](./LICENSE).
-
-[1]: https://github.com/earendil-works/pi
-[2]: https://github.com/k2-fsa/sherpa-onnx
-[3]: https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-de-kroko-2025-08-06/tree/main
+The native runtime and JSONL client adapt code from Talk-to-Pi. See
+[docs/LICENSING.md](docs/LICENSING.md) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+for dependency licenses, model terms, and attribution.

@@ -1,22 +1,22 @@
 # pi-dictate
 
 Pi extension that transcribes speech into the focused text field via a local
-streaming STT server, triggered by hotkeys.
+Nemotron native runtime, triggered by hotkeys.
 
 ## Language
 
-**STT server**:
-The local sherpa-onnx WebSocket service that accepts a raw PCM stream and
-emits transcripts for it.
-_Avoid_: cloud backend (the former Deepgram integration), ASR service
+**Runtime**:
+The local native Nemotron process that captures microphone audio and emits
+transcription events over JSONL stdin/stdout.
+_Avoid_: cloud backend (the former Deepgram integration), Sherpa server
 
 **Rolling text**:
-The server's current best-effort transcript for the open stream. Each update
+The runtime's current best-effort transcript for the open stream. Each update
 replaces the previous one; it is not appended.
 _Avoid_: partial, interim
 
 **Final**:
-The server's definitive transcript for a stream, emitted after the client
+The runtime's definitive transcript for a stream, emitted after the client
 signals end of audio.
 _Avoid_: result
 
